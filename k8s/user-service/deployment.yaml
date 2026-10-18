@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      containers:
+      - name: user-service
+        image: hefangbing/user-service:v1
+        ports:
+        - containerPort: 8080
+        # 关键配置：本地有镜像就不从远程拉取！
+        imagePullPolicy: IfNotPresent
+        # 健康探针，对应我们写的 /health，面试高频点
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 5
