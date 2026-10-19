@@ -4,15 +4,43 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+var (
+	httpRequests = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Number of HTTP requests",
+		},
+		[]string{"code", "method"},
+	)
+	httpDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "HTTP request latency",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"code", "method"},
+	)
 )
 
 func main() {
+	prometheus.MustRegister(httpRequests, httpDuration)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("GET /order/{id}", orderHandler)
+	mux.Handle("/metrics", promhttp.Handler())
+
+	var handler http.Handler = mux
+	handler = promhttp.InstrumentHandlerDuration(httpDuration, handler)
+	handler = promhttp.InstrumentHandlerCounter(httpRequests, handler)
 
 	log.Println("order-service starting on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Fatal(http.ListenAndServe(":8080", handler))
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {

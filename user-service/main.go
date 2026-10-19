@@ -4,16 +4,43 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+var (
+	httpRequests = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Number of HTTP requests",
+		},
+		[]string{"code", "method"},
+	)
+	httpDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "HTTP request latency",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"code", "method"},
+	)
 )
 
 func main() {
+	prometheus.MustRegister(httpRequests, httpDuration)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler)
-	// 新增这一行：注册user路由，{id}是路径参数
 	mux.HandleFunc("GET /user/{id}", userHandler)
+	mux.Handle("/metrics", promhttp.Handler())
+
+	var handler http.Handler = mux
+	handler = promhttp.InstrumentHandlerDuration(httpDuration, handler)
+	handler = promhttp.InstrumentHandlerCounter(httpRequests, handler)
 
 	log.Println("user-service starting on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Fatal(http.ListenAndServe(":8080", handler))
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -21,18 +48,13 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// 新增userHandler函数
 func userHandler(w http.ResponseWriter, r *http.Request) {
-	// 从url路径取出id参数
 	id := r.PathValue("id")
-
-	// 构造返回json数据
 	userData := map[string]string{
 		"id":    id,
 		"name":  "User" + id,
 		"email": "user" + id + "@example.com",
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(userData)
 }
