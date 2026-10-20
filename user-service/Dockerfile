@@ -1,5 +1,6 @@
 
 FROM golang:1.27-alpine AS builder
+ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /app
 COPY go.mod ./
 RUN go mod download

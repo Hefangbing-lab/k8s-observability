@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -36,6 +37,7 @@ func main() {
 	mux.Handle("/metrics", promhttp.Handler())
 
 	var handler http.Handler = mux
+	handler = loggingMiddleware(handler)
 	handler = promhttp.InstrumentHandlerDuration(httpDuration, handler)
 	handler = promhttp.InstrumentHandlerCounter(httpRequests, handler)
 
@@ -73,4 +75,26 @@ func orderHandler(w http.ResponseWriter, r *http.Request) {
 		"email":    user["email"],
 		"product":  "云服务器ECS",
 	})
+}
+
+// loggingMiddleware 打印每个请求的方法、路径、状态码和耗时
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := &statusWriter{ResponseWriter: w, statusCode: 200}
+		next.ServeHTTP(ww, r)
+		log.Printf("request method=%s path=%s status=%d duration=%s",
+			r.Method, r.URL.Path, ww.statusCode, time.Since(start))
+	})
+}
+
+// statusWriter 包装 ResponseWriter 以捕获状态码
+type statusWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (ww *statusWriter) WriteHeader(code int) {
+	ww.statusCode = code
+	ww.ResponseWriter.WriteHeader(code)
 }
