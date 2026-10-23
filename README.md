@@ -164,7 +164,7 @@ sum(rate(http_requests_total{code=~"5.."}[1m]))
 - 登录 Docker Hub（Secrets: `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`）
 - 打双标签：`latest` + git commit SHA
 
-## 踩坑记录（实战沉淀）
+## 问题记录
 
 1. **国内镜像拉取**：`registry.k8s.io`、`docker.io` 直连失败，统一换 DaoCloud 镜像源 `m.daocloud.io/...`
 2. **Docker 构建时 GOPROXY**：宿主机 `go env -w` 不影响容器，必须在 Dockerfile 里 `ENV GOPROXY=https://goproxy.cn,direct`
@@ -173,7 +173,7 @@ sum(rate(http_requests_total{code=~"5.."}[1m]))
 5. **livenessProbe 污染指标**：健康检查每 5 秒一次，会让 QPS 基线偏高
 6. **集群重置恢复**：所有部署声明式管理，靠 git 里的 yaml + 本地 chart tgz 10 分钟恢复
 
-## 面试可讲点
+## 面试关键
 
 - 可观测性三支柱中 Metrics 与 Logging 的完整链路
 - Prometheus Operator 的工作原理：ServiceMonitor → 自动生成抓取配置
