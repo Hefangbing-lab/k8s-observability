@@ -1,0 +1,41 @@
+# 集群内压测 Job：绕开 kubectl port-forward 的单连接瓶颈，测出来的数字才是服务本身的。
+# 注意 podTemplate 必须带 part-of 标签，否则会被 NetworkPolicy 拦掉（策略只放行
+# ingress-nginx / monitoring / 同应用内的 Pod）。
+# 用法：
+#   kubectl -n default delete job loadtest --ignore-not-found
+#   kubectl -n default apply -f loadtest/job.yaml
+#   kubectl -n default logs -f job/loadtest
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadtest
+  namespace: default
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: k8s-observability
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loadtest
+        image: hefangbing/loadgen:local
+        imagePullPolicy: IfNotPresent
+        args:
+        - -url=http://order-service/order/100?userId=3
+        - -duration=60s
+        - -concurrency=50
+        resources:
+          requests:
+            cpu: 200m
+            memory: 64Mi
+          limits:
+            cpu: "1"
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]

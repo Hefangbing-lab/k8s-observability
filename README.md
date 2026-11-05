@@ -286,6 +286,28 @@ quantile_over_time(0.99,
 6. **CI 与部署脱节**：已修复。旧版本 CI 推 `latest`/SHA，Deployment 却写死 `:v1` + `IfNotPresent`，两者毫无关系；现在由 `update-manifests` 把 SHA 写回 `k8s/kustomization.yaml`，集群从同一份声明同步。
 7. **集群重置恢复**：更正表述 —— git 里的 YAML + chart tgz + values 可以恢复**配置**；Prometheus/Loki 历史数据（PVC）、Docker Hub Secrets、Grafana 用户与数据源改动仍无法靠 YAML 恢复，需要 Velero/快照与密钥管理。
 
+## 容量与压测
+
+压测工具在 `loadtest/`（无第三方依赖的 Go 程序，多阶段构建成 scratch 镜像，约 5MB），以 Job 形式跑在集群内——**不要用本机 `kubectl port-forward` 测吞吐**，单条转发连接会先成为瓶颈。
+
+```bash
+docker build -t hefangbing/loadgen:local ./loadtest        # 首次构建
+kubectl -n default delete job loadtest --ignore-not-found
+kubectl -n default apply -f loadtest/job.yaml             # 50 并发 × 60 秒，打 order-service
+kubectl -n default logs job/loadtest
+```
+
+实测环境：Docker Desktop 单节点（K8s v1.34，2 vCPU / 8GB），2×order-service + 2×user-service，`/order/{id}` 内部同步调用 `/user/{id}`，数据全部在内存中：
+
+| 指标 | 数值 |
+|---|---|
+| 总请求 | 348,799（60 秒，0 错误） |
+| 吞吐 | **≈5,800 QPS** |
+| P50 / P90 / P99 | 1.24ms / 24.6ms / 85.9ms |
+| 最大延迟 | 1.34s（GC 与调度抖动导致的长尾） |
+
+读这组数据时的三个前提：① 压测 Pod 与被压服务同节点，不存在跨节点网络开销；② 业务无数据库、无外部依赖，是纯内存 echo 场景，换成真实 IO 会低一到两个数量级；③ 单节点无 HPA，扩容能力未被验证。**这组数字的用处是给出量级与瓶颈位置，不是宣称生产容量。**
+
 ## 已知局限与后续计划
 
 | 局限 | 现状 / 计划 |
@@ -293,9 +315,9 @@ quantile_over_time(0.99,
 | Tracing 未实现 | 计划用 OpenTelemetry + Tempo，把 `X-Request-ID` 升级为 W3C `traceparent` 并加 exemplar |
 | GitOps 控制器 | `update-manifests` 只更新 git；集群侧需自行安装 Argo CD/Flux，或用 `deploy.yml` 手动同步 |
 | 部署凭据 | `deploy.yml` 用长期 kubeconfig（Secret `KUBECONFIG_B64`），生产应换 OIDC |
-| NetworkPolicy | 需要支持它的 CNI；Docker Desktop 内置 K8s 可能不执行策略 |
+| NetworkPolicy | Docker Desktop 内置 CNI **确实执行**该策略（实测：策略漏放行服务间互访时，order→user 被丢包，表现为 3s 后 504）；策略已显式放行应用内互访 |
 | Ingress | 无 host / TLS / rewrite，仅为本地演示；生产应加 cert-manager 与域名 |
 | 单机环境 | 单节点、无 StorageClass 备份、无 HPA/PDB/多可用区演练 |
 | REST 语义 | `GET /order/{id}?userId=` 用查询参数表达业务身份，后续应改成资源层级或从认证上下文取 |
 | 代码重复 | 两个服务的中间件重复；因 Docker 构建上下文是各自目录，抽公共包需把 context 提到仓库根，收益暂时不足 |
-| 容量数据 | 尚未做压测与 SLO/Error Budget 定义 |
+| 容量数据 | 已有集群内压测（见上一节），但只有单节点、无 IO 场景；SLO / Error Budget 仍未定义 |
