@@ -3,7 +3,12 @@ kind: Deployment
 metadata:
   name: order-service
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: order-service
@@ -11,16 +16,55 @@ spec:
     metadata:
       labels:
         app: order-service
+        app.kubernetes.io/part-of: k8s-observability
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
       - name: order-service
-        image: hefangbing/order-service:v1
-        ports:
-        - containerPort: 8080
+        # tag 由 CI 的 update-manifests job 写成 commit SHA（见 k8s/kustomization.yaml）。
+        image: hefangbing/order-service:latest
         imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 65532
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 2
+          failureThreshold: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
-          initialDelaySeconds: 3
-          periodSeconds: 5
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sh", "-c", "sleep 5"]

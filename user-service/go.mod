@@ -1,4 +1,4 @@
-module github.com/Lin-ctrl412/user-service
+module github.com/Hefangbing-lab/k8s-observability/user-service
 
 go 1.27.0
 

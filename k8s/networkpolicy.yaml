@@ -1,0 +1,30 @@
+# 只允许 ingress-nginx、monitoring 以及同一应用内的服务互访业务 Pod:8080。
+# 注意：必须显式放行「应用内互访」（order-service → user-service），
+# 否则策略生效后内部调用会被丢弃，表现为 order 接口 3s 后返回 504。
+# 需要支持 NetworkPolicy 的 CNI（Calico / Cilium / Docker Desktop 内置 CNI）才真正生效。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrict-business-pods
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: k8s-observability
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    # 应用内互访（order-service -> user-service）
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: k8s-observability
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+    ports:
+    - protocol: TCP
+      port: 8080

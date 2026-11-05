@@ -1,0 +1,36 @@
+# PrometheusRule 同样要打 release 标签（ruleSelectorNilUsesHelmValues=true），
+# 否则 Operator 不会把规则加载进 Prometheus。
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: service-slo
+  namespace: default
+  labels:
+    release: monitoring
+spec:
+  groups:
+  - name: service
+    rules:
+    - alert: HighP99Latency
+      expr: |
+        histogram_quantile(0.99,
+          sum by (job, le) (rate(http_request_duration_seconds_bucket[5m]))) > 0.5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "{{ $labels.job }} P99 latency > 500ms for 5m"
+    - alert: HighErrorRate
+      # 用 or 给没有 5xx 样本的 job 补 0，避免分子是空向量导致「无数据」。
+      expr: |
+        (
+          sum by (job) (rate(http_requests_total{code=~"5.."}[5m]))
+          or
+          sum by (job) (rate(http_requests_total[5m])) * 0
+        )
+        / sum by (job) (rate(http_requests_total[5m])) > 0.01
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "{{ $labels.job }} 5xx rate > 1% for 5m"

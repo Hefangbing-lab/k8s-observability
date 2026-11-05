@@ -3,7 +3,12 @@ kind: Deployment
 metadata:
   name: user-service
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: user-service
@@ -11,18 +16,60 @@ spec:
     metadata:
       labels:
         app: user-service
+        app.kubernetes.io/part-of: k8s-observability
     spec:
+      # 与应用的 Shutdown(20s) 对齐，留出 Endpoint 摘除与在途请求收尾时间。
+      terminationGracePeriodSeconds: 30
       containers:
       - name: user-service
-        image: hefangbing/user-service:v1
-        ports:
-        - containerPort: 8080
-        # 关键配置：本地有镜像就不从远程拉取！
+        # tag 由 CI 的 update-manifests job 写成 commit SHA（见 k8s/kustomization.yaml）。
+        # 这里的 latest 只是首次安装 / 本地离线演示的默认值。
+        image: hefangbing/user-service:latest
         imagePullPolicy: IfNotPresent
-        # 健康探针，对应我们写的 /health，面试高频点
+        ports:
+        - name: http
+          containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 65532
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+          seccompProfile:
+            type: RuntimeDefault
+        # startupProbe 保护慢启动，避免启动期被 liveness 杀掉。
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 2
+          failureThreshold: 15
+        # readiness 失败只摘 Endpoint，不重启容器；liveness 失败才重启。
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
         livenessProbe:
           httpGet:
             path: /health
-            port: 8080
-          initialDelaySeconds: 3
-          periodSeconds: 5
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
+        # 等 Endpoint 收敛后再开始退出，配合应用的 Server.Shutdown。
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sh", "-c", "sleep 5"]

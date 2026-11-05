@@ -1,0 +1,35 @@
+# 手动把 k8s/ 的声明式配置应用到集群。
+# 需要先在仓库 Settings -> Secrets 配置 KUBECONFIG_B64：
+#   cat ~/.kube/config | base64 -w0     (Linux/macOS)
+#   [Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\.kube\config"))   (PowerShell)
+# 生产环境更推荐 Argo CD / Flux + OIDC，不要用长期 kubeconfig。
+name: deploy-to-cluster
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+      - name: 安装 kubectl
+        uses: azure/setup-kubectl@v4
+      - name: 写入 kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          if [ -z "$KUBECONFIG_B64" ]; then
+            echo "::error::请先在仓库 Secrets 中配置 KUBECONFIG_B64"
+            exit 1
+          fi
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+      - name: 应用声明式配置
+        run: kubectl apply -k k8s/
+      - name: 等待滚动完成
+        run: |
+          kubectl -n default rollout status deployment/user-service --timeout=120s
+          kubectl -n default rollout status deployment/order-service --timeout=120s

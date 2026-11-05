@@ -1,0 +1,105 @@
+# 由 kube-prometheus-stack 的 grafana.sidecar.dashboards 自动发现并加载，
+# 集群重建后 Dashboard 不再丢失。
+# 注意：datasource uid 需与 chart 生成的 Grafana 数据源一致（默认是 prometheus）。
+# 默认时间范围取 15 分钟：短时压测（几十秒到几分钟）在这个窗口里才看得清形状；
+# 1 小时窗口会把 90 秒的流量脉冲压成一条竖线，看起来像"没有波动"。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: svc-overview-dashboard
+  namespace: default
+  labels:
+    grafana_dashboard: "1"
+data:
+  svc-overview.json: |-
+    {
+      "uid": "k8s-obs-services",
+      "title": "k8s-observability / Services",
+      "schemaVersion": 39,
+      "version": 2,
+      "refresh": "10s",
+      "time": {"from": "now-15m", "to": "now"},
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "QPS by service",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "min": 0,
+              "custom": {"lineWidth": 2, "fillOpacity": 15, "showPoints": "auto", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"refId": "A", "expr": "sum by (job) (rate(http_requests_total[1m]))", "legendFormat": "{{job}}"}
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "P99 latency by service",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {"lineWidth": 2, "fillOpacity": 15, "showPoints": "auto", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"refId": "A", "expr": "histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{job}}"}
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "5xx error rate",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "custom": {"lineWidth": 2, "fillOpacity": 15, "showPoints": "auto", "spanNulls": true},
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "orange", "value": 0.01},
+                  {"color": "red", "value": 0.05}
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"refId": "A", "expr": "(sum by (job) (rate(http_requests_total{code=~\"5..\"}[5m])) or sum by (job) (rate(http_requests_total[5m])) * 0) / sum by (job) (rate(http_requests_total[5m]))", "legendFormat": "{{job}}"}
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "QPS by handler",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "min": 0,
+              "custom": {"lineWidth": 2, "fillOpacity": 15, "showPoints": "auto", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"refId": "A", "expr": "sum by (handler) (rate(http_requests_total[1m]))", "legendFormat": "{{handler}}"}
+          ]
+        }
+      ]
+    }

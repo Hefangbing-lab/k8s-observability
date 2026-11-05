@@ -1,6 +1,6 @@
-module github.com/Lin-ctrl412/order-service
+module github.com/Hefangbing-lab/k8s-observability/order-service
 
-go 1.26.0
+go 1.27.0
 
 require github.com/prometheus/client_golang v1.25.0
 

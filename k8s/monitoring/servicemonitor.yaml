@@ -1,9 +1,14 @@
+# release 标签的来源：kube-prometheus-stack 的
+# prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=true，
+# Helm 渲染时会自动生成 matchLabels: release: <release 名>（本项目是 monitoring）。
+# 若 helm install 时改了 release 名，这里的标签必须同步改。
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: user-service
+  namespace: default     # 显式声明，不依赖 kubectl 当前 context
   labels:
-    release: monitoring   # 关键：不写这行 Prometheus 不会抓
+    release: monitoring
 spec:
   namespaceSelector:
     matchNames:
@@ -12,14 +17,16 @@ spec:
     matchLabels:
       app: user-service
   endpoints:
-  - targetPort: 8080
+  - port: http           # 匹配 Service 的端口名，不再硬编码 targetPort 数字
     path: /metrics
     interval: 15s
+    scrapeTimeout: 10s
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: order-service
+  namespace: default
   labels:
     release: monitoring
 spec:
@@ -30,6 +37,7 @@ spec:
     matchLabels:
       app: order-service
   endpoints:
-  - targetPort: 8080
+  - port: http
     path: /metrics
     interval: 15s
+    scrapeTimeout: 10s

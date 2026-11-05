@@ -1,1 +1,10 @@
+.git
+.gitignore
+*.md
+*.tgz
+*.log
 *.exe
+*.test
+*.out
+Dockerfile
+.dockerignore

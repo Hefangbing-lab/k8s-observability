@@ -1,0 +1,15 @@
+# 本地构建与测试产物
+*.exe
+*.test
+*.out
+*.log
+
+# 编辑器
+.idea/
+.vscode/
+
+# WorkBuddy 工作区数据（不是项目源码）
+.workbuddy/
+
+# 本地面试复习资料，不随项目发布
+interview-prep/

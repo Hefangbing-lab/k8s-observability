@@ -8,6 +8,7 @@ spec:
   selector:
     app: order-service
   ports:
-  - port: 80
-    targetPort: 8080
+  - name: http
+    port: 80
+    targetPort: http   # 引用容器端口名，改端口时不必同步改数字
   type: ClusterIP

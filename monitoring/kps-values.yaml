@@ -1,0 +1,29 @@
+# 监控栈安装（把配置写进 git，集群重建时可复现）：
+#   helm install monitoring monitoring/kube-prometheus-stack-92.10.1.tgz \
+#     -n monitoring --create-namespace -f monitoring/kps-values.yaml
+prometheus:
+  prometheusSpec:
+    retention: 10d
+    scrapeInterval: 15s
+    # 显式声明选择器，不再依赖 chart 的隐式默认行为。
+    # （另一种做法是留空 selector 并用 serviceMonitorSelectorNilUsesHelmValues=true，
+    #   由 Helm 自动生成 matchLabels: release: <release 名>；两者二选一。）
+    serviceMonitorSelector:
+      matchLabels:
+        release: monitoring
+    ruleSelector:
+      matchLabels:
+        release: monitoring
+
+grafana:
+  # 生产请把 adminPassword 换成 External Secrets / Sealed Secrets 引用。
+  # 不显式设置时 chart 会生成随机密码，用下面命令获取：
+  #   kubectl -n monitoring get secret monitoring-grafana \
+  #     -o jsonpath='{.data.admin-password}' | base64 -d
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      # 默认搜索所有命名空间（因此 k8s/monitoring/dashboard-configmap.yaml
+      # 放在 default 命名空间也能被发现）。

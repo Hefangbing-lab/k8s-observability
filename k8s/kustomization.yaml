@@ -1,0 +1,22 @@
+# 唯一的部署入口：kubectl apply -k k8s/
+# CI 的 update-manifests job 会用 `kustomize edit set image` 把 newTag 改成 commit SHA，
+# 这样 git 就是镜像版本的唯一事实源（不再有 kubectl set image 造成的漂移）。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- user-service/deployment.yaml
+- user-service/service.yaml
+- order-service/deployment.yaml
+- order-service/service.yaml
+- ingress.yaml
+# ingress-nginx 的官方 YAML 含两个 Job（不可变资源，重复 apply 会报 immutable field），
+# 所以单独管理：kubectl apply -f k8s/ingress-nginx/ingress-nginx.yaml（仅首次安装）。
+- monitoring/servicemonitor.yaml
+- monitoring/prometheus-rule.yaml
+- monitoring/dashboard-configmap.yaml
+- networkpolicy.yaml
+images:
+- name: hefangbing/user-service
+  newTag: local
+- name: hefangbing/order-service
+  newTag: local

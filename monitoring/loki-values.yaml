@@ -1,0 +1,51 @@
+# 日志栈安装（版本与 schema 写进 git，避免「现场手工升级、重装即复现故障」）：
+#   helm repo add grafana https://grafana.github.io/helm-charts
+#   helm upgrade --install loki grafana/loki-stack -n logging --create-namespace \
+#     -f monitoring/loki-values.yaml
+#
+# 注意：loki-stack chart 各版本里 loki.config 可能是「映射」或「多行字符串」。
+# 安装前先确认：helm show values grafana/loki-stack | sed -n '/^loki:/,/^[a-z]/p'
+# 若该版本要求字符串，把下面的 config: 改成 config: | 并把整段内容缩进到下一层。
+loki:
+  image:
+    tag: "3.5.0"   # 固定版本；默认 2.x 与新版 Grafana 的 LogQL 不兼容
+  config:
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+    common:
+      path_prefix: /var/loki
+      storage:
+        filesystem:
+          chunks_directory: /var/loki/chunks
+          rules_directory: /var/loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+      - from: 2024-01-01
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+promtail:
+  enabled: true
+  # 多行日志（panic 堆栈）与结构化字段解析的示例片段；字段名随 chart 版本可能不同，
+  # 以 `helm show values grafana/loki-stack` 中的 promtail.config.snippets 为准：
+  #   config:
+  #     snippets:
+  #       pipelineStages:
+  #       - multiline:
+  #           firstline: '^\d{4}-\d{2}-\d{2}|^\{'
+  #           maxWaitTime: 3s
+  #       - json:
+  #           expressions:
+  #             request_id: request_id
+  #             handler: handler
+  #             status: status
+  #             duration_ms: duration_ms
