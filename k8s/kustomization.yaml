@@ -18,7 +18,7 @@ resources:
 images:
 - name: hefangbing/order-service
   newName: hefangbing/order-service
-  newTag: 04748fd7f33404d9688e54968ac6653a21b7f8e1
+  newTag: b1baa396d99d4ccb295248cb588c95141dbfed5e
 - name: hefangbing/user-service
   newName: hefangbing/user-service
-  newTag: 04748fd7f33404d9688e54968ac6653a21b7f8e1
+  newTag: b1baa396d99d4ccb295248cb588c95141dbfed5e
