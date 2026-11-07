@@ -50,10 +50,10 @@ grafana:
       nodeGraph:
         enabled: false
 
-# exemplar 存储：Prometheus 需允许保存 exemplar，Grafana 才能画出可点击的点。
-# 若集群里的 Prometheus 是 v3.x 且默认已开启，可保持注释；若面板看不到 exemplar 点，
-# 打开下面两行后 helm upgrade：
-# prometheus:
-#   prometheusSpec:
-#     enableFeatures:
-#     - exemplar-storage
+# exemplar 存储：Prometheus 不会默认保存 exemplar（`prometheus_tsdb_exemplar_max_exemplars=0`
+# 就是没开），Grafana 上「指标点 -> trace」就必须显式打开这个 feature。
+# 打开后可以用 /api/v1/query_exemplars 直接验证，见 README 的追踪验证第四步。
+prometheus:
+  prometheusSpec:
+    enableFeatures:
+    - exemplar-storage

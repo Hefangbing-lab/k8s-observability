@@ -293,7 +293,7 @@ order-service ──OTLP/HTTP:4318──▶ otel-collector ──OTLP/gRPC:4317�
 - **exemplar 依赖 OpenMetrics 协商**：`/metrics` 必须用 `promhttp.HandlerFor(..., HandlerOpts{EnableOpenMetrics: true})`。默认的 `promhttp.Handler()` 只协商 `text/plain;version=0.0.4`，而 exemplar 只有 OpenMetrics 文本格式才有——`ObserveWithExemplar` 写了也导不出去，Grafana 上「指标点 → trace」会静默失效。
 - **降级不阻塞**：追踪初始化失败只打一条 warn，业务照常启动——可观测性组件故障不该拖垮主流程。
 
-### 怎么验证真的通了（四步）
+### 怎么验证真的通了（五步）
 
 ```bash
 # 1. 起组件（Tempo 与 Collector 都在 k8s/observability/，随 apply -k 一起装）
@@ -311,6 +311,13 @@ curl -s "http://localhost:3200/api/traces/<TRACE_ID>" | python -m json.tool | he
 # 4. 确认 exemplar 真的在暴露（必须显式要 OpenMetrics 格式，普通 /metrics 看不到）
 curl -s -H 'Accept: application/openmetrics-text; version=1.0.0' \
   http://localhost:18080/metrics | grep -m1 'trace_id="'
+
+# 5. 确认 Prometheus 把 exemplar 存下来了（返回 seriesLabels + trace_id 才算通）
+kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090
+curl -s -G --data-urlencode 'query=http_request_duration_seconds_bucket' \
+  --data-urlencode "start=$(date -u -d '-15 min' +%FT%TZ)" \
+  --data-urlencode "end=$(date -u +%FT%TZ)" \
+  http://localhost:9090/api/v1/query_exemplars
 ```
 
 Grafana 里看瀑布图：左侧 **Explore** → 数据源选 **Tempo** → 粘贴 trace ID → 两个服务、三到四个 span（`GET /order/{id}`、`HTTP GET`、`GET /user/{id}`）按时间轴排开。
@@ -319,7 +326,7 @@ Grafana 里看瀑布图：左侧 **Explore** → 数据源选 **Tempo** → 粘�
 
 | 入口 | 做法 |
 |---|---|
-| 指标 → trace | 应用侧用 `ObserveWithExemplar` 把 trace ID 写进直方图 exemplar；Dashboard 的 P99 面板已开 `"exemplar": true`，Grafana 上每个点可点开跳到 Tempo（数据源侧的 `exemplarTraceIdDestinations` 已在 `kps-values.yaml` 配好） |
+| 指标 → trace | 三件事缺一不可：应用侧 `ObserveWithExemplar` 写 trace ID、`/metrics` 开 `EnableOpenMetrics`、Prometheus 开 `exemplar-storage`。都用 `GET /api/v1/query_exemplars` 验证，Dashboard 的 P99 面板已开 `"exemplar": true`，Grafana 上点 exemplar 点直接进 Tempo（数据源侧 `exemplarTraceIdDestinations` 见 `kps-values.yaml`） |
 | 日志 → trace | 日志里的 `trace_id` 字段；装 Loki 后在数据源里加 derived field，指向 Tempo（本次未装 Loki，属可选） |
 | trace → 日志 | Tempo 数据源的 `tracesToLogsV2`（同样依赖 Loki，同样可选） |
 
@@ -358,7 +365,7 @@ Grafana 里看瀑布图：左侧 **Explore** → 数据源选 **Tempo** → 粘�
 6. **CI 与部署脱节**：已修复。旧版本 CI 推 `latest`/SHA，Deployment 却写死 `:v1` + `IfNotPresent`，两者毫无关系；现在由 `update-manifests` 把 SHA 写回 `k8s/kustomization.yaml`，集群从同一份声明同步。
 7. **集群重置恢复**：更正表述 —— git 里的 YAML + chart tgz + values 可以恢复**配置**；Prometheus/Loki 历史数据（PVC）、Docker Hub Secrets、Grafana 用户与数据源改动仍无法靠 YAML 恢复，需要 Velero/快照与密钥管理。
 8. **`kubectl set image` 会让 `helm upgrade` 失败**：用命令手改监控组件镜像后，字段归属变成 `kubectl-set`，Helm 走 Server-Side Apply 升级时报 `conflict ... conflict with "kubectl-set" ... containers[name="grafana"].image`。正确做法是把镜像地址下沉到 values（`monitoring/kps-values.mirror.yaml` 这种覆盖层），再删掉被手改的 Deployment 让 Helm 重建；命令式改动一律不进生产。
-9. **exemplar 静默丢失**：`promhttp.Handler()` 默认只协商 `text/plain;version=0.0.4`，而 exemplar 只存在于 OpenMetrics 文本格式里。代码写了 `ObserveWithExemplar` 也照样看不到，Grafana 上「指标点 → trace」永远点不出来且没有任何报错。修复是 `promhttp.HandlerFor(..., HandlerOpts{EnableOpenMetrics: true})`，并用单测锁住协商结果与 `trace_id=` 的存在。
+9. **exemplar 静默丢失（两处坑，都踩过）**：① 应用侧 `promhttp.Handler()` 默认只协商 `text/plain;version=0.0.4`，而 exemplar 只有 OpenMetrics 文本格式才有，代码里写了 `ObserveWithExemplar` 也照样导不出去 → 改用 `promhttp.HandlerFor(..., HandlerOpts{EnableOpenMetrics: true})`，并用单测锁住协商结果与 `trace_id=` 的存在。② Prometheus 侧默认**不存** exemplar（`prometheus_tsdb_exemplar_max_exemplars=0`）→ 在 `kps-values.yaml` 打开 `enableFeatures: [exemplar-storage]`。两处任缺一个，Grafana 的「指标点 → trace」都点不出来，且没有任何报错。
 
 ## 容量与压测
 
