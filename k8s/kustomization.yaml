@@ -20,7 +20,7 @@ resources:
 images:
 - name: hefangbing/order-service
   newName: hefangbing/order-service
-  newTag: aa2c1fbade7a2566de6ee0d76ac41d9fe082f5b0
+  newTag: 188f93663acf60c2e9dc05fcc64caa8a1ff14ad3
 - name: hefangbing/user-service
   newName: hefangbing/user-service
-  newTag: aa2c1fbade7a2566de6ee0d76ac41d9fe082f5b0
+  newTag: 188f93663acf60c2e9dc05fcc64caa8a1ff14ad3
