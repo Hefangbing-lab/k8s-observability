@@ -102,6 +102,10 @@ kubectl get nodes
 helm install monitoring monitoring/kube-prometheus-stack-92.10.1.tgz \
   -n monitoring --create-namespace -f monitoring/kps-values.yaml
 
+# 国内网络拉不动 docker.io / registry.k8s.io 时，叠加镜像加速覆盖层（可反复 upgrade）：
+#   helm upgrade monitoring monitoring/kube-prometheus-stack-92.10.1.tgz \
+#     -n monitoring -f monitoring/kps-values.yaml -f monitoring/kps-values.mirror.yaml
+
 # 日志栈（版本与 schema 写进 git，避免重装后版本回退）
 helm repo add grafana https://grafana.github.io/helm-charts
 helm upgrade --install loki grafana/loki-stack -n logging --create-namespace \
@@ -286,9 +290,10 @@ order-service ──OTLP/HTTP:4318──▶ otel-collector ──OTLP/gRPC:4317�
 - **span 命名用路由模板**（`GET /order/{id}`）而不是原始 URL：`/order/100`、`/order/101` 会各成一个 span 名，直接在 Tempo 里制造高基数。
 - **管理端点是干净的**：`/health`、`/metrics` 在 otelhttp 之外，探针与抓取不产生 span（有单测断言）。
 - **ID 统一**：无入站 `X-Request-ID` 时，request ID 直接取 trace ID（32 位 hex）。日志里 `request_id == trace_id`，Loki 与 Tempo 用同一个键互跳。
+- **exemplar 依赖 OpenMetrics 协商**：`/metrics` 必须用 `promhttp.HandlerFor(..., HandlerOpts{EnableOpenMetrics: true})`。默认的 `promhttp.Handler()` 只协商 `text/plain;version=0.0.4`，而 exemplar 只有 OpenMetrics 文本格式才有——`ObserveWithExemplar` 写了也导不出去，Grafana 上「指标点 → trace」会静默失效。
 - **降级不阻塞**：追踪初始化失败只打一条 warn，业务照常启动——可观测性组件故障不该拖垮主流程。
 
-### 怎么验证真的通了（三步）
+### 怎么验证真的通了（四步）
 
 ```bash
 # 1. 起组件（Tempo 与 Collector 都在 k8s/observability/，随 apply -k 一起装）
@@ -302,6 +307,10 @@ curl -s -D - -o /dev/null "http://localhost:18080/order/100?userId=3" | grep -i 
 # 3. 直接查 Tempo API（把上一步的 ID 填进去），应看到两个 service 的 span
 kubectl -n monitoring port-forward svc/tempo 3200:3200
 curl -s "http://localhost:3200/api/traces/<TRACE_ID>" | python -m json.tool | head -40
+
+# 4. 确认 exemplar 真的在暴露（必须显式要 OpenMetrics 格式，普通 /metrics 看不到）
+curl -s -H 'Accept: application/openmetrics-text; version=1.0.0' \
+  http://localhost:18080/metrics | grep -m1 'trace_id="'
 ```
 
 Grafana 里看瀑布图：左侧 **Explore** → 数据源选 **Tempo** → 粘贴 trace ID → 两个服务、三到四个 span（`GET /order/{id}`、`HTTP GET`、`GET /user/{id}`）按时间轴排开。
@@ -348,6 +357,8 @@ Grafana 里看瀑布图：左侧 **Explore** → 数据源选 **Tempo** → 粘�
 5. **livenessProbe 污染指标**：已修复。管理端点与业务链路分离，并有单元测试断言 `/health`、`/metrics` 不会增加业务计数。
 6. **CI 与部署脱节**：已修复。旧版本 CI 推 `latest`/SHA，Deployment 却写死 `:v1` + `IfNotPresent`，两者毫无关系；现在由 `update-manifests` 把 SHA 写回 `k8s/kustomization.yaml`，集群从同一份声明同步。
 7. **集群重置恢复**：更正表述 —— git 里的 YAML + chart tgz + values 可以恢复**配置**；Prometheus/Loki 历史数据（PVC）、Docker Hub Secrets、Grafana 用户与数据源改动仍无法靠 YAML 恢复，需要 Velero/快照与密钥管理。
+8. **`kubectl set image` 会让 `helm upgrade` 失败**：用命令手改监控组件镜像后，字段归属变成 `kubectl-set`，Helm 走 Server-Side Apply 升级时报 `conflict ... conflict with "kubectl-set" ... containers[name="grafana"].image`。正确做法是把镜像地址下沉到 values（`monitoring/kps-values.mirror.yaml` 这种覆盖层），再删掉被手改的 Deployment 让 Helm 重建；命令式改动一律不进生产。
+9. **exemplar 静默丢失**：`promhttp.Handler()` 默认只协商 `text/plain;version=0.0.4`，而 exemplar 只存在于 OpenMetrics 文本格式里。代码写了 `ObserveWithExemplar` 也照样看不到，Grafana 上「指标点 → trace」永远点不出来且没有任何报错。修复是 `promhttp.HandlerFor(..., HandlerOpts{EnableOpenMetrics: true})`，并用单测锁住协商结果与 `trace_id=` 的存在。
 
 ## 容量与压测
 

@@ -195,3 +195,36 @@ func TestOTLPExporterDeliversSpans(t *testing.T) {
 		t.Fatal("no ScopeSpans in payload")
 	}
 }
+
+// exemplar 只能通过 OpenMetrics 文本格式导出：promhttp.Handler() 默认只协商
+// text/plain;version=0.0.4，会把 exemplar 全丢掉，表现为 Grafana 直方图上
+// 「指标点 -> trace」永远点不出来（静默失效，看日志也发现不了）。
+// 这里同时锁住「协商结果」和「exemplar 真实存在」两件事。
+func TestMetricsExposesExemplar(t *testing.T) {
+	registerMetrics()
+	withTestTracer(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"User1","email":"u1@example.com"}`))
+	}))
+	defer upstream.Close()
+	oldURL := downstreamBaseURL
+	downstreamBaseURL = upstream.URL
+	defer func() { downstreamBaseURL = oldURL }()
+
+	handler := newHandler()
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/order/1", nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Accept", "application/openmetrics-text; version=1.0.0")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/openmetrics-text") {
+		t.Fatalf("content-type = %q, want application/openmetrics-text", ct)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `trace_id="`) {
+		t.Fatal("exemplar 未导出：Grafana 无法从指标点跳到 trace")
+	}
+}

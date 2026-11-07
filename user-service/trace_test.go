@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -98,5 +99,30 @@ func TestHealthAndMetricsProduceNoSpans(t *testing.T) {
 	}
 	if n := len(exp.GetSpans()); n != 0 {
 		t.Fatalf("management endpoints produced %d spans, want 0", n)
+	}
+}
+
+// 同 order-service：没有 OpenMetrics 协商就没有 exemplar，指标到 trace 的跳转会静默失效。
+func TestMetricsExposesExemplar(t *testing.T) {
+	registerMetrics()
+
+	tp := sdktrace.NewTracerProvider()
+	oldTP := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(oldTP) })
+
+	handler := newHandler()
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/user/1", nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Accept", "application/openmetrics-text; version=1.0.0")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/openmetrics-text") {
+		t.Fatalf("content-type = %q, want application/openmetrics-text", ct)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `trace_id="`) {
+		t.Fatal("exemplar 未导出：Grafana 无法从指标点跳到 trace")
 	}
 }

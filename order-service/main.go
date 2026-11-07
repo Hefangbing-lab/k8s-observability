@@ -102,7 +102,12 @@ func newHandler() http.Handler {
 	business.HandleFunc("GET /order/{id}", withHandler("GET /order/{id}", orderHandler))
 
 	root := http.NewServeMux()
-	root.Handle("/metrics", promhttp.Handler())
+	// 必须显式打开 OpenMetrics：exemplar 只存在于 OpenMetrics 文本格式中，
+	// promhttp.Handler() 默认只协商 text/plain;version=0.0.4，会把 exemplar 全部丢掉，
+	// 表现就是 Grafana 直方图上「指标点 -> trace」永远点不出来（静默失效）。
+	root.Handle("/metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
+		EnableOpenMetrics: true,
+	}))
 	root.HandleFunc("GET /health", healthHandler)
 	// otelhttp 必须包住业务链路：它从 traceparent 头提取上游上下文并创建 server span，
 	// 内层中间件（requestID / observe）才能拿到 span，出站请求也才能继续这条链路。

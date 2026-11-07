@@ -84,7 +84,10 @@ func newHandler() http.Handler {
 	business.HandleFunc("GET /user/{id}", withHandler("GET /user/{id}", userHandler))
 
 	root := http.NewServeMux()
-	root.Handle("/metrics", promhttp.Handler())
+	// 同 order-service：不显式打开 OpenMetrics 就不会输出 exemplar。
+	root.Handle("/metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{
+		EnableOpenMetrics: true,
+	}))
 	root.HandleFunc("GET /health", healthHandler)
 	// otelhttp 必须包住业务链路：它从 traceparent 头提取上游上下文并创建 server span，
 	// 内层 requestID / observe 才能拿到 span，日志才谈得上与 trace 对齐。

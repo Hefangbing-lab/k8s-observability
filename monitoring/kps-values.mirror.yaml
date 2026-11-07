@@ -1,0 +1,21 @@
+# 镜像加速覆盖层（叠加在 kps-values.yaml 之上，只影响本地/国内网络环境）：
+#   helm upgrade monitoring monitoring/kube-prometheus-stack-92.10.1.tgz \
+#     -n monitoring -f monitoring/kps-values.yaml -f monitoring/kps-values.mirror.yaml
+#
+# 只覆盖 docker.io / registry.k8s.io 上的两个镜像，其余走 quay.io 的保持默认。
+#
+# 为什么要有这个文件：之前是直接 `kubectl -n monitoring set image` 手改的，
+# 这会让字段归属变成 field manager "kubectl-set"，Helm 用 Server-Side Apply 升级时
+# 直接报 "conflict ... conflict with \"kubectl-set\" ... containers[name=\"grafana\"].image"。
+# 把镜像地址写进 values 后，期望值 == 线上值，漂移和冲突同时消失。
+grafana:
+  image:
+    registry: m.daocloud.io
+    repository: docker.io/grafana/grafana
+    tag: 13.2.4-distroless
+
+kube-state-metrics:
+  image:
+    registry: m.daocloud.io
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
+    tag: v2.20.0
