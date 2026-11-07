@@ -14,6 +14,8 @@ resources:
 - monitoring/servicemonitor.yaml
 - monitoring/prometheus-rule.yaml
 - monitoring/dashboard-configmap.yaml
+- observability/tempo.yaml
+- observability/otel-collector.yaml
 - networkpolicy.yaml
 images:
 - name: hefangbing/order-service

@@ -53,7 +53,7 @@ data:
             "overrides": []
           },
           "targets": [
-            {"refId": "A", "expr": "histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{job}}"}
+            {"refId": "A", "expr": "histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bucket[5m])))", "exemplar": true, "legendFormat": "{{job}}"}
           ]
         },
         {
@@ -98,7 +98,7 @@ data:
             "overrides": []
           },
           "targets": [
-            {"refId": "A", "expr": "sum by (handler) (rate(http_requests_total[1m]))", "legendFormat": "{{handler}}"}
+            {"refId": "A", "expr": "sum by (job, handler) (rate(http_requests_total[1m]))", "legendFormat": "{{handler}}"}
           ]
         }
       ]

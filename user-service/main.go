@@ -19,6 +19,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // 默认 DefBuckets 从 5ms 起、间距过大，毫秒级内部调用的 P99 会严重失真。
@@ -74,8 +77,8 @@ func newRequestID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// 把「管理端点」与「业务链路」分开：/metrics 和 /health 不经过埋点与访问日志，
-// 从根上消除 Prometheus 抓取和 livenessProbe 对 QPS/P99 的污染。
+// 把「管理端点」与「业务链路」分开：/metrics 和 /health 不经过埋点、访问日志与追踪，
+// 从根上消除 Prometheus 抓取和 livenessProbe 对 QPS/P99 的污染，也不会产生探针 span。
 func newHandler() http.Handler {
 	business := http.NewServeMux()
 	business.HandleFunc("GET /user/{id}", withHandler("GET /user/{id}", userHandler))
@@ -83,19 +86,49 @@ func newHandler() http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/metrics", promhttp.Handler())
 	root.HandleFunc("GET /health", healthHandler)
-	root.Handle("/", withRequestID(observe(business)))
+	// otelhttp 必须包住业务链路：它从 traceparent 头提取上游上下文并创建 server span，
+	// 内层 requestID / observe 才能拿到 span，日志才谈得上与 trace 对齐。
+	// withMeta 放在它外层：span 命名要靠内层写入的 meta（见 spanNameFromMeta）。
+	root.Handle("/", withMeta(otelhttp.NewHandler(
+		withRequestID(observe(business)),
+		"http.server",
+		otelhttp.WithSpanNameFormatter(spanNameFromMeta),
+	)))
 	return root
+}
+
+// withMeta 在 otelhttp 之前建立请求级元数据指针：
+// 内外层共享同一个 *requestMeta，withHandler 写路由模板，otelhttp 收尾时据此给 span 命名。
+func withMeta(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), metaKey{}, &requestMeta{handler: "unmatched"})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// otelhttp 在 handler 返回后回调本函数（此时 r.Pattern 是外层 mux 的 "/"，
+// 所以不能用它命名），改为读 withHandler 写入路由模板。
+func spanNameFromMeta(_ string, r *http.Request) string {
+	if m, ok := r.Context().Value(metaKey{}).(*requestMeta); ok && m.handler != "" && m.handler != "unmatched" {
+		return m.handler
+	}
+	return r.Method
 }
 
 func withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get(requestIDHeader)
 		if id == "" {
-			id = newRequestID()
+			// request ID 与 trace ID 对齐：日志、指标 exemplar、trace 用同一个标识。
+			if sc := oteltrace.SpanContextFromContext(r.Context()); sc.IsValid() {
+				id = sc.TraceID().String()
+			} else {
+				id = newRequestID()
+			}
 		}
 		w.Header().Set(requestIDHeader, id)
-		ctx := context.WithValue(r.Context(), metaKey{}, &requestMeta{requestID: id, handler: "unmatched"})
-		next.ServeHTTP(w, r.WithContext(ctx))
+		metaFrom(r.Context()).requestID = id
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -115,9 +148,24 @@ func observe(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 
 		m := metaFrom(r.Context())
+		sc := oteltrace.SpanContextFromContext(r.Context())
 		labels := []string{strconv.Itoa(ww.statusCode), r.Method, m.handler}
 		httpRequests.WithLabelValues(labels...).Inc()
-		httpDuration.WithLabelValues(labels...).Observe(time.Since(start).Seconds())
+		elapsed := time.Since(start).Seconds()
+
+		if sc.IsValid() {
+			// exemplar 是「指标 → trace」的钩子：直方图上每个点可点开跳到该次请求的 trace。
+			if eo, ok := httpDuration.WithLabelValues(labels...).(prometheus.ExemplarObserver); ok {
+				eo.ObserveWithExemplar(elapsed, prometheus.Labels{"trace_id": sc.TraceID().String()})
+			} else {
+				httpDuration.WithLabelValues(labels...).Observe(elapsed)
+			}
+			// 路由模板同时作为 span 属性，Tempo 里可按 http.route 聚合。
+			span := oteltrace.SpanFromContext(r.Context())
+			span.SetAttributes(attribute.String("http.route", m.handler))
+		} else {
+			httpDuration.WithLabelValues(labels...).Observe(elapsed)
+		}
 
 		slog.Info("request",
 			"method", r.Method,
@@ -126,6 +174,8 @@ func observe(next http.Handler) http.Handler {
 			"status", ww.statusCode,
 			"duration_ms", float64(time.Since(start).Microseconds())/1000,
 			"request_id", m.requestID,
+			"trace_id", sc.TraceID().String(),
+			"span_id", sc.SpanID().String(),
 		)
 	})
 }
@@ -196,8 +246,21 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	registerMetrics()
 
+	// 追踪初始化失败只降级，不阻塞启动。
+	if shutdownTracing, err := setupTracing(context.Background()); err != nil {
+		slog.Warn("tracing disabled", "err", err)
+	} else {
+		defer func() {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := shutdownTracing(flushCtx); err != nil {
+				slog.Warn("flush traces failed", "err", err)
+			}
+		}()
+	}
+
 	srv := &http.Server{
-		Addr:              ":8080",
+		Addr:              ":" + getenv("PORT", "8080"),
 		Handler:           newHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

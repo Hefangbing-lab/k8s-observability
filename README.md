@@ -1,6 +1,6 @@
 # 基于 Kubernetes 的微服务可观测性平台
 
-> 两个 Go 编写的微服务，部署在 Docker Desktop 内置 K8s 集群上，打通 **Metrics（Prometheus + Grafana）** 与 **Logging（Promtail + Loki）** 两条链路，并通过 **GitHub Actions + Kustomize** 把「构建产物 → 部署声明」连成闭环。
+> 两个 Go 编写的微服务，部署在 Docker Desktop 内置 K8s 集群上，打通可观测性三支柱：**Metrics（Prometheus + Grafana）**、**Logging（Promtail + Loki）**、**Tracing（OpenTelemetry + Collector + Tempo）**，并通过 **GitHub Actions + Kustomize** 把「构建产物 → 部署声明」连成闭环。
 
 ## 架构
 
@@ -13,23 +13,23 @@
                           │   order-service      │
                           │  (:8080, /order/{id})│
                           └──────────┬──────────┘
-                                     │ HTTP (K8s DNS: user-service) + X-Request-ID
+                                     │ HTTP (K8s DNS: user-service) + traceparent + X-Request-ID
                           ┌──────────▼──────────┐
                           │   user-service       │
                           │  (:8080, /user/{id}) │
                           └─────────────────────┘
-                              │           │
-              /metrics 拉取    │           │  stdout(JSON) 日志
-                              ▼           ▼
-                    ┌──────────────┐  ┌──────────┐
-                    │ Prometheus   │  │ Promtail  │
-                    │ (Operator)   │  │ (DaemonSet)│
-                    └──────┬───────┘  └────┬─────┘
-                           │               ▼
-                    ┌──────▼───────┐  ┌──────────┐
-                    │   Grafana    │◀─│   Loki    │
-                    │ QPS/P99/日志  │  │  (3.5)   │
-                    └─────────────┘  └──────────┘
+                              │        │        │
+              /metrics 拉取    │        │        │  OTLP/HTTP 4318
+                              ▼        ▼        ▼
+                    ┌──────────────┐ ┌────────┐ ┌───────────────┐
+                    │ Prometheus   │ │Promtail│ │ otel-collector│
+                    │ (Operator)   │ │(Daemon)│ │  batch + 扇出  │
+                    └──────┬───────┘ └───┬────┘ └──────┬────────┘
+                           │             ▼             │ OTLP/gRPC 4317
+                    ┌──────▼───────┐ ┌────────┐ ┌──────▼───────┐
+                    │   Grafana    │◀│  Loki  │ │    Tempo     │
+                    │ 指标/日志/trace│ └────────┘ └──────────────┘
+                    └──────────────┘   ▲ 按 traceID 跳转
 ```
 
 ## 技术栈
@@ -41,6 +41,7 @@
 | 编排 | Docker Desktop 内置 K8s；`kubectl apply -k k8s/`（Kustomize） |
 | 指标 | Prometheus、kube-prometheus-stack、ServiceMonitor、PrometheusRule |
 | 日志 | Promtail（DaemonSet）、Loki 3.5（tsdb schema v13） |
+| 追踪 | OpenTelemetry SDK（`otelhttp` + OTLP/HTTP）、Collector（batch + 扇出）、Tempo（单机 local 存储） |
 | 看板 | Grafana（Dashboard 以 ConfigMap 纳入 git + sidecar 自动加载） |
 | CI | GitHub Actions：测试门禁 → 构建推镜像 → 回写镜像 tag 到 git |
 
@@ -49,19 +50,20 @@
 - [x] 两个微服务通过 **K8s Service DNS** 互相调用，带超时、context 取消与连接池调优
 - [x] Prometheus 埋点：`http_requests_total` counter + `http_request_duration_seconds` histogram，标签 `code/method/handler`（`handler` 是路由模板，低基数）
 - [x] **管理端点与业务链路分离**：`/metrics`、`/health` 不进埋点与访问日志，探针不再污染 QPS/P99
-- [x] `X-Request-ID` 跨服务透传，日志可用同一个 ID 串联两端
+- [x] `X-Request-ID` 与 **W3C traceparent** 双透传：无入站 ID 时 request ID 直接用 trace ID，日志与 trace 共用同一标识
+- [x] 分布式追踪：`otelhttp` 自动生成 server/client span，跨服务父子上报，Tempo 里可看两跳瀑布图
 - [x] 结构化 JSON 日志（`method/handler/status/duration_ms/request_id`），LogQL 可做数值聚合
 - [x] ServiceMonitor 自动发现 + PrometheusRule 告警（P99、5xx 错误率）
 - [x] Grafana Dashboard 以 ConfigMap 纳入 git，集群重建不丢
 - [x] readiness / startup / liveness 三探针、资源限制、安全上下文、优雅关闭（`Shutdown` + `preStop`）
 - [x] CI：测试门禁 → 构建并推送 `latest` + commit SHA → 把 SHA 写回 `k8s/kustomization.yaml`
-- [x] 单元测试覆盖：指标不污染、requestID 透传、下游失败 502、超时 504、输入校验 400
+- [x] 单元测试覆盖：指标不污染、requestID 透传、下游失败 502、超时 504、输入校验 400、**traceparent 延续与跨服务父子关系**、**OTLP 真实上报（protobuf 解码断言）**
 
 ## 项目结构
 
 ```
 .
-├── user-service/            # main.go, main_test.go, Dockerfile, .dockerignore, go.mod/go.sum
+├── user-service/            # main.go, otel.go, main_test.go, trace_test.go, Dockerfile, go.mod/go.sum
 ├── order-service/          # 同上；通过 http://user-service 调用下游
 ├── k8s/
 │   ├── kustomization.yaml   # 唯一部署入口（含 images transformer）
@@ -70,6 +72,9 @@
 │   ├── ingress.yaml         # /user、/order 路由
 │   ├── ingress-nginx/       # controller YAML（单独 apply，含不可变 Job）
 │   ├── networkpolicy.yaml   # 只允许 ingress-nginx / monitoring 访问业务 Pod
+│   ├── observability/
+│   │   ├── tempo.yaml           # Tempo（ConfigMap + Deployment + Service）
+│   │   └── otel-collector.yaml  # Collector（OTLP 接收 → 批处理 → Tempo）
 │   └── monitoring/
 │       ├── servicemonitor.yaml
 │       ├── prometheus-rule.yaml
@@ -266,9 +271,67 @@ quantile_over_time(0.99,
 
 > Promtail 默认提供 `container` / `namespace` / `pod` 等标签；若要按 `app` 过滤，需要在 Promtail 的 relabel 里把 Pod label 映射出来。
 
+## 链路追踪（Tracing）
+
+### 链路与设计
+
+```
+order-service ──OTLP/HTTP:4318──▶ otel-collector ──OTLP/gRPC:4317──▶ Tempo ──HTTP:3200──▶ Grafana
+     │  (otelhttp: server span + client span)         (batch + 扇出)
+     └── traceparent ──▶ user-service（延续同一 trace，server span 的 parent = 上游 client span）
+```
+
+- **应用只认一个端点**：`OTEL_EXPORTER_OTLP_ENDPOINT`（默认 `http://otel-collector.monitoring.svc.cluster.local:4318`），采样、批处理、多后端扇出都放在 Collector，换后端不改代码。
+- **采样策略**：`ParentBased(TraceIDRatioBased)`。父级已采样则沿用父级决定，保证一条链路要么全采要么全不采；比例用 `OTEL_TRACES_SAMPLER_ARG` 调（默认 1.0）。
+- **span 命名用路由模板**（`GET /order/{id}`）而不是原始 URL：`/order/100`、`/order/101` 会各成一个 span 名，直接在 Tempo 里制造高基数。
+- **管理端点是干净的**：`/health`、`/metrics` 在 otelhttp 之外，探针与抓取不产生 span（有单测断言）。
+- **ID 统一**：无入站 `X-Request-ID` 时，request ID 直接取 trace ID（32 位 hex）。日志里 `request_id == trace_id`，Loki 与 Tempo 用同一个键互跳。
+- **降级不阻塞**：追踪初始化失败只打一条 warn，业务照常启动——可观测性组件故障不该拖垮主流程。
+
+### 怎么验证真的通了（三步）
+
+```bash
+# 1. 起组件（Tempo 与 Collector 都在 k8s/observability/，随 apply -k 一起装）
+kubectl apply -k k8s/
+kubectl -n monitoring rollout status deploy/otel-collector
+kubectl -n monitoring rollout status deploy/tempo
+
+# 2. 打一次请求，响应头里的 X-Request-ID 就是这次请求的 trace ID
+curl -s -D - -o /dev/null "http://localhost:18080/order/100?userId=3" | grep -i x-request-id
+
+# 3. 直接查 Tempo API（把上一步的 ID 填进去），应看到两个 service 的 span
+kubectl -n monitoring port-forward svc/tempo 3200:3200
+curl -s "http://localhost:3200/api/traces/<TRACE_ID>" | python -m json.tool | head -40
+```
+
+Grafana 里看瀑布图：左侧 **Explore** → 数据源选 **Tempo** → 粘贴 trace ID → 两个服务、三到四个 span（`GET /order/{id}`、`HTTP GET`、`GET /user/{id}`）按时间轴排开。
+
+### 从指标和日志跳到 trace
+
+| 入口 | 做法 |
+|---|---|
+| 指标 → trace | 应用侧用 `ObserveWithExemplar` 把 trace ID 写进直方图 exemplar；Dashboard 的 P99 面板已开 `"exemplar": true`，Grafana 上每个点可点开跳到 Tempo（数据源侧的 `exemplarTraceIdDestinations` 已在 `kps-values.yaml` 配好） |
+| 日志 → trace | 日志里的 `trace_id` 字段；装 Loki 后在数据源里加 derived field，指向 Tempo（本次未装 Loki，属可选） |
+| trace → 日志 | Tempo 数据源的 `tracesToLogsV2`（同样依赖 Loki，同样可选） |
+
+### TraceQL 示例
+
+```traceql
+{ resource.service.name = "order-service" }
+{ span.http.route = "GET /order/{id}" && duration > 50ms }
+{ status = error }
+```
+
+### 这一层的已知取舍
+
+- Tempo 单副本 + `emptyDir` + 24h 保留：Pod 重建即丢历史 trace，生产要换对象存储（S3/OSS）后端。
+- 全量采样，没有 tail sampling：压测时会打爆 Collector；生产应在 Collector 加 `tail_sampling` 只留慢请求与错误。
+- 未开 Tempo 的 `metrics-generator`：没有 service graph（服务依赖拓扑），需要 span metrics 才有。
+- 只采 traces：指标仍走 Prometheus client（pull 模型），没有把 OTel metrics/logs 也接进来——两条路各有取舍，混用会带来两套语义。
+
 ## 技术原理与权衡
 
-- **三支柱**：本项目做了 Metrics（多少、多快）与 Logging（某次请求发生了什么）；Tracing 尚未实现。`X-Request-ID` 只能串日志，不能替代 span 瀑布图。
+- **三支柱**：Metrics 回答「多少、多快」，Logging 回答「某一次发生了什么」，Tracing 回答「时间花在哪一跳」。三者靠同一个 trace ID 串起来：日志里的 `request_id`、指标 exemplar 的 `trace_id`、Tempo 的 traceID 完全一致，所以能在 Grafana 里互相跳转。
 - **Prometheus Operator**：Prometheus CR 的 `serviceMonitorSelector` 选中 ServiceMonitor → Operator 生成 scrape config 写入 Secret 中的 `prometheus.yaml.gz` → config-reloader 触发热加载。本仓库显式设置了 selector，因此 ServiceMonitor / PrometheusRule 必须带 `release: monitoring` 标签。
 - **P99 的准确性**：`histogram_quantile` 假设 bucket 内观测均匀分布，所以默认 `DefBuckets`（5ms 起、间距 2 倍以上）不适合毫秒级内部调用；本项目改用 1ms 起的细粒度 buckets。
 - **为什么写 stdout**：容器运行时统一负责日志落盘与轮转，采集（Promtail DaemonSet）与业务解耦，应用不需要管理文件、权限和磁盘。
@@ -312,7 +375,7 @@ kubectl -n default logs job/loadtest
 
 | 局限 | 现状 / 计划 |
 |---|---|
-| Tracing 未实现 | 计划用 OpenTelemetry + Tempo，把 `X-Request-ID` 升级为 W3C `traceparent` 并加 exemplar |
+| Tracing 存储 | 已打通 OTel → Collector → Tempo；但 Tempo 是单机 + emptyDir + 24h 保留，Pod 重建丢历史，生产需对象存储后端与多副本 |
 | GitOps 控制器 | `update-manifests` 只更新 git；集群侧需自行安装 Argo CD/Flux，或用 `deploy.yml` 手动同步 |
 | 部署凭据 | `deploy.yml` 用长期 kubeconfig（Secret `KUBECONFIG_B64`），生产应换 OIDC |
 | NetworkPolicy | Docker Desktop 内置 CNI **确实执行**该策略（实测：策略漏放行服务间互访时，order→user 被丢包，表现为 3s 后 504）；策略已显式放行应用内互访 |

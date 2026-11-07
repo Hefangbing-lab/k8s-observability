@@ -27,3 +27,33 @@ grafana:
       labelValue: "1"
       # 默认搜索所有命名空间（因此 k8s/monitoring/dashboard-configmap.yaml
       # 放在 default 命名空间也能被发现）。
+    datasources:
+      # 指标 → trace 的跳转：Prometheus 直方图 exemplar 里的 trace_id
+      # 在这一步被绑定到 Tempo 数据源，Grafana 上点 exemplar 点即可展开瀑布图。
+      # 前提：应用侧用 ObserveWithExemplar 写入 trace_id（order/user-service 已实现），
+      #      且 Prometheus 开启了 exemplar 存储（见文件底部说明）。
+      exemplarTraceIdDestinations:
+        datasourceUid: tempo
+        traceIdLabelName: trace_id
+        urlDisplayLabel: 在 Tempo 中查看
+
+  # 追加 Tempo 数据源（uid 固定为 tempo，上面的跳转和面板都按这个 uid 引用）。
+  additionalDataSources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo.monitoring.svc.cluster.local:3200
+    jsonData:
+      httpMethod: GET
+      # Tempo 的 service graph：需要 metrics-generator，本次未开启，留开关不启用。
+      nodeGraph:
+        enabled: false
+
+# exemplar 存储：Prometheus 需允许保存 exemplar，Grafana 才能画出可点击的点。
+# 若集群里的 Prometheus 是 v3.x 且默认已开启，可保持注释；若面板看不到 exemplar 点，
+# 打开下面两行后 helm upgrade：
+# prometheus:
+#   prometheusSpec:
+#     enableFeatures:
+#     - exemplar-storage
